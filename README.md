@@ -1,100 +1,124 @@
-Chisel Project Template
-=======================
+# Single-Cycle Processor in Chisel
 
-You've done the [Chisel Bootcamp](https://github.com/freechipsproject/chisel-bootcamp), and now you
-are ready to start your own Chisel project.  The following procedure should get you started
-with a clean running [Chisel3](https://www.chisel-lang.org/) project.
+A teaching-oriented 32-bit single-cycle processor written in Chisel 3. It implements a **31-instruction subset of RV32I** and includes a CPU core, separate instruction and data memories, debug ports, self-contained tests, and a Verilog generation entry point.
 
-## Make your own Chisel3 project
+## Supported instructions
 
-### Dependencies
+| Category | Instructions |
+| --- | --- |
+| Register arithmetic and logic | ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND |
+| Immediate arithmetic and logic | ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI |
+| Conditional branches | BEQ, BNE, BLT, BGE, BLTU, BGEU |
+| Jumps | JAL, JALR |
+| Upper immediates | LUI, AUIPC |
+| Memory access | LW, SW |
 
-#### JDK 8 or newer
+- The register file contains 32 registers of 32 bits each. Reset clears the registers; `x0` always reads as zero.
+- The PC resets to `0x00000000` and advances by four bytes during sequential execution.
+- I/S/B/J immediates are sign-extended. Shift operations use the low five bits of the shift amount.
+- `JALR` computes its target as `(rs1 + sign_extend(imm)) & ~1` and writes the current PC plus four as the link value.
+- `ECALL` (`0x00000073`) asserts `Top.io.exit` as a simulation completion marker. It does not implement trap handling or stop the clock automatically.
 
-We recommend LTS releases Java 8 and Java 11. You can install the JDK as recommended by your operating system, or use the prebuilt binaries from [AdoptOpenJDK](https://adoptopenjdk.net/).
+This is not a complete RV32I implementation. LB, LH, LBU, LHU, SB, SH, FENCE, EBREAK, CSR operations, privileged instructions, interrupts, exceptions, and compressed instructions are not implemented. Instructions outside the decoder table do not write registers or memory, and the PC advances by four; no illegal-instruction exception is raised. A constant declared in `Instructions.scala` does not imply that the corresponding instruction is implemented.
 
-#### SBT
+## Requirements and quick start
 
-SBT is the most common built tool in the Scala community. You can download it [here](https://www.scala-sbt.org/download.html).
-
-### How to get started
-
-#### Create a repository from the template
-
-This repository is a Github template. You can create your own repository from it by clicking the green `Use this template` in the top right.
-Please leave `Include all branches` **unchecked**; checking it will pollute the history of your new repository.
-For more information, see ["Creating a repository from a template"](https://docs.github.com/en/free-pro-team@latest/github/creating-cloning-and-archiving-repositories/creating-a-repository-from-a-template).
-
-#### Wait for the template cleanup workflow to complete
-
-After using the template to create your own blank project, please wait a minute or two for the `Template cleanup` workflow to run which will removes some template-specific stuff from the repository (like the LICENSE).
-Refresh the repository page in your browser until you see a 2nd commit by `actions-user` titled `Template cleanup`.
-
-
-#### Clone your repository
-
-Once you have created a repository from this template and the `Template cleanup` workflow has completed, you can click the green button to get a link for cloning your repository.
-Note that it is easiest to push to a repository if you set up SSH with Github, please see the [related documentation](https://docs.github.com/en/free-pro-team@latest/github/authenticating-to-github/connecting-to-github-with-ssh). SSH is required for pushing to a Github repository when using two-factor authentication.
+The project uses Scala 2.12.12, Chisel 3.4.2, chiseltest 0.3.2, and sbt 1.4.7. CI runs on JDK 11; the tests have also passed locally on JDK 17. The first build requires network access to download dependencies.
 
 ```sh
-git clone git@github.com:%REPOSITORY%.git
-cd %NAME%
+git clone https://github.com/Kimberley-Inti/single-cycle-processor-in-chisel.git
+cd single-cycle-processor-in-chisel
+sbt clean test
 ```
-(The variables wrapped in `%` will be filled in by the template cleanup) <!-- #REMOVE-ON-CLEANUP# -->
 
-#### Set project organization and name in build.sbt
+Tests use the default Treadle backend in chiseltest. Neither a RISC-V cross-compiler nor Verilator is required to run them.
 
-The cleanup workflow will have attempted to provide sensible defaults for `ThisBuild / organization` and `name` in the `build.sbt`.
-Feel free to use your text editor of choice to change them as you see fit.
+Run a specific suite with:
 
-#### Clean up the README.md file
-
-Again, use you editor of choice to make the README specific to your project.
-
-#### Add a LICENSE file
-
-It is important to have a LICENSE for open source (or closed source) code.
-This template repository has the Unlicense in order to allow users to add any license they want to derivative code.
-The Unlicense is stripped when creating a repository from this template so that users do not accidentally unlicense their own work.
-
-For more information about a license, check out the [Github Docs](https://docs.github.com/en/free-pro-team@latest/github/building-a-strong-community/adding-a-license-to-a-repository).
-
-#### Commit your changes
 ```sh
-git commit -m 'Starting %NAME%'
-git push origin main
+sbt "testOnly CoreTest"
+sbt "testOnly TopTest"
 ```
 
-### Did it work?
+## Memory and program format
 
-You should now have a working Chisel3 project.
+`IMem` and `DMem` are independent **1024-byte** memories. Both assemble 32-bit words in little-endian order. Valid byte addresses are `0x000` through `0x3ff`; every byte of a word access must remain within this range. Use four-byte-aligned addresses for portable word accesses and four-byte-aligned instruction targets. The hardware does not check for out-of-range or misaligned accesses; their results should not be relied upon.
 
-You can run the included test with:
+Instruction memory is initialized with `loadMemoryFromFile`. Its hexadecimal text format contains **one byte per line**, starting at address zero. For example, `addi x1, x0, 256` (`0x10000093`) is represented as:
+
+```text
+93
+00
+00
+10
+```
+
+Data memory is not initialized by reset. Programs must write data before reading it. Address `0x2004` is outside the supported memory range and is not a mapped data base address.
+
+The runnable example is [examples/integration.hex](examples/integration.hex), with its assembly listing in [examples/integration.S](examples/integration.S). It exercises memory access, backward branches, JAL, and JALR with an odd intermediate target. It reaches ECALL at PC `0x34` and writes `0xbeefdead` to data address `0x100`. The top-level tests generate their own program data and verify the checked-in example; they do not depend on an untracked `final.hex`. Files under `src/hex/` are historical samples.
+
+To convert an RV32 ELF linked at address zero, use Bash and a RISC-V objcopy tool:
+
 ```sh
-sbt test
+bash src/shell/tohex.sh program.elf program.hex
+# Select a different toolchain if needed:
+OBJCOPY=riscv32-unknown-elf-objcopy bash src/shell/tohex.sh program.elf program.hex
 ```
 
-You should see a whole bunch of output that ends with something like the following lines
+The script defaults to `riscv64-unknown-elf-objcopy`, converts the ELF into raw bytes, and enforces the 1024-byte instruction-memory capacity. Compile and link programs using only supported instructions. Instruction and data memories are separate: an ELF data section does not automatically initialize DMem.
+
+## Generate Verilog
+
+```sh
+sbt "runMain Core.Generate examples/integration.hex generated"
 ```
-[info] Tests: succeeded 1, failed 0, canceled 0, ignored 0, pending 0
-[info] All tests passed.
-[success] Total time: 5 s, completed Dec 16, 2020 12:18:44 PM
+
+Outputs include `generated/Top.v`, FIRRTL, and annotation files. The output directory defaults to `generated` when the last argument is omitted and is excluded from version control. Generated RTL contains the CPU and its debug interface; obsolete generated files are not stored in the repository.
+
+The generator records the program path in memory-loading annotations. A subsequent RTL simulation must be able to access that path. Synthesis of initialized memories depends on the target FPGA or ASIC toolchain.
+
+## Top-level interface and debugging
+
+| Interface | Purpose |
+| --- | --- |
+| `clock`, `reset` | Clock and reset |
+| `io.exit` | Asserted while the current instruction is ECALL |
+| `io.debug_index` / `io.debug_data` | Combinational read of a general-purpose register |
+| `io.pr_out` | Current PC, instruction, operands, writeback data, and control signals |
+| `io.dmem_en` | Selects the debug memory address and disables memory writes when asserted |
+| `io.dmem_addr` / `io.dmem_data` | Debug address and 32-bit memory read data |
+
+Drive all inputs and keep `io.dmem_en` low during normal execution. Debug memory reads are combinational and require no additional clock edge; inspect memory after stopping clock advancement. Debug mode does not pause the CPU. Advancing the clock can change the PC and registers, and a load instruction will read from the debug address. Tests stop advancing the clock when `exit` is observed, then inspect the final state.
+
+## Test coverage
+
+`sbt clean test` runs eight tests across seven suites:
+
+- `CoreTest`: all 31 implemented instructions, using boundary values and reproducible random operands. Each instruction is checked against a software expectation, including signed and unsigned comparisons, shift amounts, branch decisions, link values, JALR target masking, memory addresses, and unsupported encodings without writes.
+- `TopTest`: a bounded complete-program run with final register and memory assertions, plus a regression test ensuring debug reads cannot redirect stores.
+- `RegTest`, `IfuTest`, `ImmSelTest`, `BrCmpTest`, and `MemTEST`: register reset and x0, PC selection and wraparound, immediate limits, all branch comparisons, little-endian memory access, and write enables.
+
+GitHub Actions performs a clean build, runs all tests, generates RTL, checks the top-level interface, and validates the ELF conversion script. These checks cover implemented behavior but are not a formal proof or complete RISC-V architectural compliance certification. The obsolete `riscv_tests.sh` harness relied on missing templates and absolute paths and is not part of the current workflow.
+
+## Project structure
+
+```text
+src/main/scala/
+  Core/          Core integration, top-level module, and RTL generator
+  Memory/        Byte-addressed instruction and data memories
+  alu/           Arithmetic and logic unit
+  controller/    Instruction control and branch comparison
+  ifu/           Program counter and instruction fetch
+  imm/           Immediate generation
+  rf/            General-purpose register file
+  exit/          ECALL detection
+  common/        Control constants and instruction encodings
+  id/            Standalone instruction-field extraction
+src/test/scala/   Self-contained tests and program-encoding helpers
+examples/        Assembly listing and byte-per-line program image
+src/shell/       ELF conversion utility
 ```
-If you see the above then...
 
-### It worked!
+## License
 
-You are ready to go. We have a few recommended practices and things to do.
-
-* Use packages and following conventions for [structure](https://www.scala-sbt.org/1.x/docs/Directories.html) and [naming](http://docs.scala-lang.org/style/naming-conventions.html)
-* Package names should be clearly reflected in the testing hierarchy
-* Build tests for all your work
-* Read more about testing in SBT in the [SBT docs](https://www.scala-sbt.org/1.x/docs/Testing.html)
-* This template includes a [test dependency](https://www.scala-sbt.org/1.x/docs/Library-Dependencies.html#Per-configuration+dependencies) on [chiseltest](https://github.com/ucb-bar/chisel-testers2), this is a reasonable starting point for most tests
-  * You can remove this dependency in the build.sbt file if you want to
-* Change the name of your project in the build.sbt file
-* Change your README.md
-
-## Problems? Questions?
-
-Check out the [Chisel Users Community](https://www.chisel-lang.org/community.html) page for links to get in contact!
+See [LICENSE](LICENSE) (The Unlicense).
