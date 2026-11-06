@@ -56,7 +56,8 @@ class Top(progPath:String) extends Module {
   imem.io <> core.io.imem
 
   // dmme <> core
-  dmem.io.mem_rw := core.io.dmem.mem_rw
+  // A debug address must never redirect an architectural store.
+  dmem.io.mem_rw := core.io.dmem.mem_rw && !io.dmem_en
   dmem.io.data_in :=  core.io.dmem.data_in
   dmem.io.addr  := core.io.dmem.addr
   core.io.dmem.data_out := dmem.io.data_out
@@ -79,4 +80,3 @@ class Top(progPath:String) extends Module {
 
 
 }
-

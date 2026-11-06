@@ -1,15 +1,15 @@
-#!/bin/bash
-FILES=/src/target/share/riscv-tests/isa/rv32*i-p-*
-SAVE_DIR=/src/chisel-template/src/riscv
+#!/usr/bin/env bash
+set -euo pipefail
 
-mkdir -p $SAVE_DIR
-
-for f in $FILES
-do
-  FILE_NAME="${f##*/}"
-  if [[ ! $f =~ "dump" ]]; then
-    riscv64-unknown-elf-objcopy -O binary $f $SAVE_DIR/$FILE_NAME.bin
-    od -An -tx1 -w1 -v $SAVE_DIR/$FILE_NAME.bin > $SAVE_DIR/$FILE_NAME.hex
-    rm -f $SAVE_DIR/$FILE_NAME.bin
-  fi
-done
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 <RV32 ELF> <output.hex>" >&2
+  exit 2
+fi
+binary=$(mktemp)
+trap 'rm -f "$binary"' EXIT
+"${OBJCOPY:-riscv64-unknown-elf-objcopy}" -O binary "$1" "$binary"
+if (( $(wc -c < "$binary") > 1024 )); then
+  echo "Program exceeds the 1024-byte instruction memory" >&2
+  exit 1
+fi
+od -An -v -tx1 "$binary" | tr -s '[:space:]' '\n' | sed '/^$/d' > "$2"

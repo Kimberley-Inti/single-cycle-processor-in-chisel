@@ -1,42 +1,56 @@
 import Core.Top
-import chiseltest.ChiselScalatestTester
-import org.scalatest.FlatSpec
-import chiseltest._
 import chisel3._
-import chisel3.util.experimental.loadMemoryFromFile
-import common.Consts.{REG_INDEX_LEN, WORD_LEN}
+import chiseltest._
+import org.scalatest.FlatSpec
+import TestPrograms._
 
-class TopTest extends FlatSpec  with ChiselScalatestTester {
-  "Top" should "work through hex" in {
-    test(new Top("src/hex/final.hex")) {
-      var clk = 0
-      c =>
-      while (!c.io.exit.peek().litToBoolean) {
-        println(s"--------clk: ${clk}------------")
-        println(f"PC = 0x${c.io.pr_out.pc.peek().litValue()}%08x, Inst = 0x${c.io.pr_out.inst.peek().litValue}%08x")
-        //println(f"RS1: ${c.io.pr_out.RS1.peek().litValue},RS2: ${c.io.pr_out.RS2.peek().litValue},RD: ${c.io.pr_out.RD.peek().litValue} ")
-        // reg write
-        println(f"rd_index: ${c.io.pr_out.RD.peek().litValue}, rd_data: ${c.io.pr_out.rd_data.peek().litValue} ")
-        //println(f"ALU = ${c.io.pr_out.ALU.peek().litValue}")
-        //println(f"pc_sel: ${c.io.pr_out.pc_sel.peek().litValue},alu_ctr: ${c.io.pr_out.alu_ctr.peek().litValue} ")
-        //println(f"op1_sel: ${c.io.pr_out.op1_sel.peek().litValue},op2_sel: ${c.io.pr_out.op2_sel.peek().litValue},imm_sel: ${c.io.pr_out.imm_sel.peek().litValue} ")
-        println(f"regw: ${c.io.pr_out.regw.peek().litValue},wb_sel: ${c.io.pr_out.wb_sel.peek().litValue} ")
-        //println(f"memrw: ${c.io.pr_out.memrw.peek().litValue},dmem: ${c.io.pr_out.dmem.peek().litValue} ")
-        c.clock.step(1)
-        clk = clk + 1
+class TopTest extends FlatSpec with ChiselScalatestTester {
+  "Top" should "execute backward branches, memory, JAL and odd-target JALR" in {
+    val program = Seq(
+      i(256, 0, 0, 1),           // 0: data base
+      u(0xbeefe000L, 2, 0x37),   // 4: LUI
+      i(-339, 2, 0, 2),          // 8: x2 = 0xbeefdead
+      s(0, 2, 1),               // 12: SW
+      i(0, 1, 2, 3, 0x03),      // 16: LW
+      i(3, 0, 0, 4),            // 20: loop counter
+      i(-1, 4, 0, 4),           // 24
+      b(-4, 0, 4, 1),           // 28: BNE back to 24
+      j(8, 5),                  // 32: JAL to 40, link 36
+      i(99, 0, 0, 6),           // 36: skipped
+      i(53, 0, 0, 7),           // 40
+      i(-4, 7, 0, 8, 0x67),     // 44: JALR (53 - 4) & ~1 = 48
+      u(0, 9, 0x17),            // 48: AUIPC = 48
+      0x73L)                    // 52: ECALL/exit
+    val generated = hex("integration", program)
+    assert(java.nio.file.Files.readAllLines(java.nio.file.Paths.get(generated)) ==
+      java.nio.file.Files.readAllLines(java.nio.file.Paths.get("examples/integration.hex")),
+      "checked-in example must match the instruction listing")
+    test(new Top("examples/integration.hex")) { c =>
+      c.io.debug_index.poke(0.U); c.io.dmem_en.poke(false.B); c.io.dmem_addr.poke(0.U)
+      var cycles = 0
+      while (!c.io.exit.peek().litToBoolean && cycles < 40) {
+        c.clock.step(); cycles += 1
       }
-      println(s"--------Finish------------")
-      //c.dmem.io.addr.poke("h_2000".U(WORD_LEN.W))
-      // c.imem.io.addr.poke("h_2000".U)
-      // c.dmem.io.data_out.expect("h_d".U)
-      // println(s"Mem:${c.dmem.io.debug_data.peek().litValue()}")
-      c.io.dmem_en.poke(true.B)
-      c.io.dmem_addr.poke(0x2004.U)
-      c.clock.step(1)
-      val dmem_out = c.io.dmem_data.peek().litValue
-      println(f"0x$dmem_out%x")
-      c.io.dmem_data.expect(BigInt("beefdead", 16).U)
+      assert(cycles < 40, "program did not reach ECALL within 40 cycles")
+      c.io.exit.expect(true.B); c.io.pr_out.pc.expect(52.U)
+      val expected = Seq(0 -> 0L, 1 -> 256L, 2 -> 0xbeefdeadL, 3 -> 0xbeefdeadL,
+        4 -> 0L, 5 -> 36L, 6 -> 0L, 7 -> 53L, 8 -> 48L, 9 -> 48L)
+      for ((reg, value) <- expected) {
+        c.io.debug_index.poke(reg.U); c.io.debug_data.expect(value.U)
+      }
+      c.io.dmem_en.poke(true.B); c.io.dmem_addr.poke(256.U)
+      c.io.dmem_data.expect("hbeefdead".U)
     }
   }
 
+  it should "prevent debug reads from redirecting stores" in {
+    val program = Seq(i(256, 0, 0, 1), i(42, 0, 0, 2), s(0, 2, 1),
+      i(99, 0, 0, 2), s(0, 2, 1), 0x73L)
+    test(new Top(hex("debug-store", program))) { c =>
+      c.io.debug_index.poke(0.U); c.io.dmem_en.poke(false.B); c.io.dmem_addr.poke(256.U)
+      c.clock.step(4); c.io.pr_out.pc.expect(16.U)
+      c.io.dmem_en.poke(true.B); c.io.dmem_data.expect(42.U)
+      c.clock.step(); c.io.dmem_data.expect(42.U); c.io.exit.expect(true.B)
+    }
+  }
 }

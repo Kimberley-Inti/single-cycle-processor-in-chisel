@@ -4,6 +4,7 @@ import chisel3.util._
 import Memory.{DmemIO, ImemIO}
 import alu.ALU
 import common.Consts._
+import common.Instructions.JALR
 import controller.{BrCmp, CU}
 import ifu.IFU
 import imm.ImmSel
@@ -61,7 +62,9 @@ class Core_1 extends Module{
   //ifu
   ifu.io.data_in  := io.imem.inst
   ifu.io.pc_sel := cu.io.jump || brcmp.io.branch_enable
-  ifu.io.npc  := alu.io.alu_result
+  // JALR clears bit zero after adding the signed immediate (RV32I).
+  ifu.io.npc := Mux(JALR === ifu.io.inst,
+    alu.io.alu_result & "hfffffffe".U(WORD_LEN.W), alu.io.alu_result)
 
   //cu := ifu
   cu.io.inst      := ifu.io.inst
@@ -117,4 +120,3 @@ class Core_1 extends Module{
   grf.io.debug_index := io.debug_index
   io.debug_data := grf.io.debug_data
 }
-
